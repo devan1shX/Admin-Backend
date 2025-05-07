@@ -1,6 +1,6 @@
-// server.js - Express API for Tech Details and Events
+// ----- SERVER FILE (e.g., server.js) -----
 import dotenv from "dotenv";
-dotenv.config(); // Load environment variables first
+dotenv.config();
 
 import express, { json } from "express";
 import cors from "cors";
@@ -8,16 +8,14 @@ import mongoose from "mongoose";
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import fsp from 'fs/promises'; // Use fs.promises for async file operations
+import fsp from 'fs/promises'; // Using fs/promises for async file operations
 import { fileURLToPath } from 'url';
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import Joi from "joi";
 
-// Import all models
-import { TechDetail, Event, User } from "./models.js"; // Ensure models.js path is correct
+import { TechDetail, Event, User } from "./models.js"; // Ensure this path is correct
 
-// --- Core Setup & Configuration ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -29,155 +27,222 @@ const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
-// Validate essential environment variables
 if (!MONGO_URI || !JWT_SECRET) {
     console.error("FATAL ERROR: MONGO_URI or JWT_SECRET is not defined in .env file.");
     process.exit(1);
 }
 
-// --- Middleware Setup ---
 app.use(cors());
 app.use(json());
-app.use('/uploads', express.static(UPLOADS_DIR)); // Serve uploaded files
+app.use('/uploads', express.static(UPLOADS_DIR));
 
-// --- MongoDB Connection ---
+const hardcodedAdminCredentials = [
+    { email: "main_admin@example.com", password: "verySecurePassword1!", role: "admin" },
+    { email: "secondary_admin@example.com", password: "anotherSecurePassword2@", role: "employee" },
+];
+
+const seedAdminUsers = async () => {
+    console.log('Seeding admin users...');
+    try {
+        for (const admin of hardcodedAdminCredentials) {
+            const lowerCaseEmail = admin.email.toLowerCase();
+            const existingUser = await User.findOne({ email: lowerCaseEmail });
+
+            if (!existingUser) {
+                const hashedPassword = await bcrypt.hash(admin.password, 10);
+                await User.create({
+                    email: lowerCaseEmail,
+                    password: hashedPassword,
+                    role: admin.role
+                });
+                console.log(`Admin user ${lowerCaseEmail} (${admin.role}) created.`);
+            } else {
+                let updateNeeded = false;
+                const updates = {};
+                if (existingUser.role !== admin.role) {
+                    updates.role = admin.role;
+                    updateNeeded = true;
+                }
+                // Add logic here if you want to update passwords from hardcoded list (generally not recommended for existing users)
+                // For example, to update password if it doesn't match (BE CAREFUL WITH THIS IN PRODUCTION):
+                // const isPasswordMatch = await bcrypt.compare(admin.password, existingUser.password);
+                // if (!isPasswordMatch) {
+                //     updates.password = await bcrypt.hash(admin.password, 10);
+                //     updateNeeded = true;
+                // }
+
+                if (updateNeeded) {
+                    await User.updateOne({ email: lowerCaseEmail }, { $set: updates });
+                    console.log(`Admin user ${lowerCaseEmail} details updated.`);
+                } else {
+                    console.log(`Admin user ${lowerCaseEmail} (${existingUser.role}) already exists and no update needed based on current logic.`);
+                }
+            }
+        }
+        console.log('Admin user seeding complete.');
+    } catch (error) {
+        console.error("Error seeding admin users:", error);
+        process.exit(1); // Exit if seeding fails
+    }
+};
+
 mongoose.connect(MONGO_URI)
-    .then(() => console.log(`🔌 Connected to MongoDB`))
+    .then(() => {
+        console.log(`🔌 Connected to MongoDB`);
+        return seedAdminUsers(); // Ensure seeding completes before starting server potentially
+    })
     .catch((err) => {
         console.error("❌ MongoDB Connection Error:", err);
         process.exit(1);
     });
 
-// --- Helper Functions ---
-
-// Basic async error wrapper for route handlers
 const asyncHandler = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-// Generates the next sequential ID (e.g., GENRE-1) for a technology genre
+// MODIFIED generateNewDocket function (as provided in the prompt)
 const generateNewDocket = async (genre) => {
     if (!genre || typeof genre !== 'string' || !genre.trim()) {
         throw new Error("Invalid genre provided for docket generation.");
     }
-    // Sanitize genre: alphanumeric only, uppercase
     const sanitizedGenre = genre.trim().replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
     if (!sanitizedGenre) {
         throw new Error("Genre contains invalid characters or is empty after sanitization.");
     }
 
-    // Find the latest tech detail with a docket matching the pattern GENRE-NUMBER
-    const latestTech = await TechDetail.findOne({ docket: new RegExp(`^${sanitizedGenre}-(\\d+)$`) })
-        .sort({ createdAt: -1 }) // Get the most recently created one
-        .select('docket')        // Only need the docket field
-        .lean();                 // Use lean for performance
+    const result = await TechDetail.aggregate([
+        { $match: { docket: new RegExp(`^${sanitizedGenre}-(\\d+)$`) } },
+        {
+            $addFields: {
+                numberStr: { $arrayElemAt: [{ $regexFindAll: { input: "$docket", regex: /(\d+)$/ } }, 0] }
+            }
+        },
+        {
+            $addFields: {
+                numberPart: {
+                    $cond: {
+                        if: { $eq: [{ $type: "$numberStr.captures" }, "array"] },
+                        then: { $toInt: { $arrayElemAt: ["$numberStr.captures", 0] } },
+                        else: null
+                    }
+                }
+            }
+        },
+        { $match: { numberPart: { $ne: null } } },
+        { $sort: { numberPart: -1 } },
+        { $limit: 1 }
+    ]).exec();
 
     let nextTechNumber = 1;
-    if (latestTech?.docket) {
-        const match = latestTech.docket.match(/-(\d+)$/);
-        if (match) {
-            const lastNumber = parseInt(match[1], 10);
-            if (!isNaN(lastNumber)) {
-                nextTechNumber = lastNumber + 1;
-            }
+    if (result.length > 0 && result[0].numberPart != null) {
+        const maxNumber = result[0].numberPart;
+        if (!isNaN(maxNumber)) {
+            nextTechNumber = maxNumber + 1;
         }
     }
     return `${sanitizedGenre}-${nextTechNumber}`;
 };
 
 
-// Parses specific string fields from form data into arrays/objects if they are JSON strings
-// Falls back to comma-separated for simple array fields if JSON parsing fails
 const parseTechDataFields = (data) => {
-    const fieldsToParse = ['advantages', 'applications', 'useCases', 'innovators', 'relatedLinks', 'existingImages']; // Added existingImages
-    const arrayFields = ['advantages', 'applications', 'useCases']; // Basic arrays
-    const objectArrayFields = ['innovators', 'relatedLinks', 'existingImages']; // Arrays of objects
+    const fieldsToParse = ['advantages', 'applications', 'useCases', 'innovators', 'relatedLinks', 'existingImages'];
+    const arrayFields = ['advantages', 'applications', 'useCases'];
+    const objectArrayFields = ['innovators', 'relatedLinks', 'existingImages']; // existingImages will be array of objects
 
     fieldsToParse.forEach(field => {
         if (data[field] && typeof data[field] === 'string') {
             try {
                 const parsed = JSON.parse(data[field]);
-                // Ensure array fields are actually arrays after parsing
                 if ((arrayFields.includes(field) || objectArrayFields.includes(field)) && !Array.isArray(parsed)) {
-                    data[field] = []; // Default to empty array if parsing gives non-array (e.g., 'null')
+                    console.warn(`Field ${field} was a string but did not parse to an array. Initializing as empty array.`);
+                    data[field] = []; // Default to empty array if not array after parsing
                 } else {
                     data[field] = parsed;
                 }
             } catch (e) {
-                // Fallback: If it's a basic array field and not valid JSON, try splitting by comma
+                // If parsing fails for simple array fields, try splitting by comma
                 if (arrayFields.includes(field)) {
                     data[field] = data[field].split(',').map(item => item.trim()).filter(Boolean);
+                } else {
+                    // For objectArrayFields, if JSON.parse fails, it's likely malformed; initialize as empty.
+                    console.warn(`Failed to parse JSON string for field ${field}: ${data[field]}. Initializing as empty array.`);
+                    data[field] = [];
                 }
-                // For object arrays or non-array fields, failed JSON parsing means keep as original string (or handle as error later if needed)
-                // console.warn(`Field '${field}' could not be parsed as JSON and is not a simple array field.`);
             }
         } else if ((arrayFields.includes(field) || objectArrayFields.includes(field)) && !data[field]) {
-            // Ensure array fields default to empty array if missing or empty
-            data[field] = [];
+            data[field] = []; // Initialize if field is not present or falsy
         }
     });
+    // Ensure existingImages contains objects with url and caption
+    if (data.existingImages && Array.isArray(data.existingImages)) {
+        data.existingImages = data.existingImages.map(img => {
+            if (typeof img === 'string') { // Simple URL string, convert to object
+                return { url: img, caption: '' };
+            }
+            return img; // Assume it's already {url, caption}
+        }).filter(img => img && typeof img.url === 'string');
+    }
+
     return data;
 };
 
+const deleteImageFiles = async (imagesToDelete = []) => {
+    if (!Array.isArray(imagesToDelete) || imagesToDelete.length === 0) {
+        return Promise.resolve();
+    }
+    const deletionPromises = imagesToDelete.map(image => {
+        if (image?.url && typeof image.url === 'string') {
+            const relativePathFromUploadsDir = image.url.startsWith('/uploads/')
+                ? image.url.substring('/uploads/'.length)
+                : path.basename(image.url); // Fallback, assumes filename only if not standard path
 
-// Maps uploaded files and captions to the image schema format
-const mapFilesToImageData = (files = [], body = {}) => {
-    return files.map((file, index) => ({
-        url: `/uploads/${file.filename}`,
-        // Assumes captions are sent as 'imageCaptions[0]', 'imageCaptions[1]', etc.
-        caption: body[`imageCaptions[${index}]`] || ''
-    }));
-};
+            const imagePath = path.join(UPLOADS_DIR, relativePathFromUploadsDir);
 
-// Deletes physical image files asynchronously
-const deleteImageFiles = async (images = []) => {
-    const deletionPromises = images.map(image => {
-        if (image?.url) {
-            const relativePath = image.url.startsWith('/') ? image.url.substring(1) : image.url;
-            const imagePath = path.join(__dirname, relativePath);
-            return fsp.unlink(imagePath).catch(err => {
-                // Log error but don't stop other deletions
-                if (err.code !== 'ENOENT') { // Ignore 'file not found' errors
-                     console.error(`❌ Error deleting image ${imagePath}:`, err);
-                }
-            });
+            return fsp.unlink(imagePath)
+                .then(() => console.log(`🗑️ Successfully deleted image: ${imagePath}`))
+                .catch(err => {
+                    if (err.code === 'ENOENT') {
+                        console.warn(`⚠️ Image not found for deletion (may have been already deleted): ${imagePath}`);
+                    } else {
+                        console.error(`❌ Error deleting image ${imagePath}:`, err);
+                    }
+                });
         }
-        return Promise.resolve(); // Return resolved promise for invalid entries
+        return Promise.resolve(); // Skip if image or url is invalid
     });
-    await Promise.all(deletionPromises); // Wait for all deletions
+    await Promise.all(deletionPromises);
 };
 
-// --- Multer Configuration (File Uploads) ---
-const storage = multer.diskStorage({
+
+// --- Multer Setup for Temporary Storage ---
+const tempStorage = multer.diskStorage({
     destination: (req, file, cb) => {
-        fs.mkdirSync(UPLOADS_DIR, { recursive: true }); // Ensure directory exists
+        fs.mkdirSync(UPLOADS_DIR, { recursive: true });
         cb(null, UPLOADS_DIR);
     },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, `tech-${uniqueSuffix}${path.extname(file.originalname)}`);
+        cb(null, `temp-${file.fieldname}-${uniqueSuffix}${path.extname(file.originalname)}`);
     }
 });
 
 const fileFilter = (req, file, cb) => {
     if (!file.originalname.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
-        // Attach error to request for specific handling in middleware
         req.fileValidationError = 'Invalid file type. Only JPG, JPEG, PNG, GIF, WEBP allowed.';
         return cb(new Error(req.fileValidationError), false);
     }
     cb(null, true);
 };
 
-const upload = multer({
-    storage,
+const tempUpload = multer({
+    storage: tempStorage,
     fileFilter,
-    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit per file
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
 
-// Multer middleware instance for handling 'images' field (up to 5 files)
-const handleMulterUpload = upload.array('images', 5);
+// Middleware to handle temporary uploads
+const handleTemporaryMulterUpload = tempUpload.array('images', 5); // Max 5 images
 
-// Middleware to handle Multer-specific errors gracefully
 const multerErrorHandler = (err, req, res, next) => {
-    if (req.fileValidationError) { // Custom error from fileFilter
+    if (req.fileValidationError) {
         return res.status(400).json({ message: req.fileValidationError });
     }
     if (err instanceof multer.MulterError) {
@@ -186,29 +251,108 @@ const multerErrorHandler = (err, req, res, next) => {
         else if (err.code === 'LIMIT_UNEXPECTED_FILE') message = 'Unexpected field or too many files (max 5).';
         return res.status(400).json({ message, code: err.code });
     }
-    if (err) { // Pass other errors to the global handler
+    if (err) { // Other errors
         return next(err);
     }
-    next(); // No Multer error
+    next();
 };
 
-// --- Joi Validation Schemas ---
+// --- Image Processing and Renaming Functions ---
+
+// Renames existing image files based on the new docket and assigns them new indexed names.
+const renameKeptImagesAndAssignNewNames = async (imagesToKeep, newDocketBase, startIndex = 1) => {
+    const sanitizedNewDocket = newDocketBase.replace(/[^a-zA-Z0-9_-]/g, '_'); // Sanitize for filename
+    const processedKeptImages = [];
+    let currentIndex = startIndex;
+
+    for (const keptImage of imagesToKeep) {
+        if (!keptImage?.url || typeof keptImage.url !== 'string') continue;
+
+        const oldFilenameRelative = keptImage.url.startsWith('/uploads/')
+            ? keptImage.url.substring('/uploads/'.length)
+            : path.basename(keptImage.url);
+
+        const oldAbsolutePath = path.join(UPLOADS_DIR, oldFilenameRelative);
+        const extension = path.extname(oldFilenameRelative);
+        const newFilename = `${sanitizedNewDocket}-${currentIndex}${extension}`;
+        const newAbsolutePath = path.join(UPLOADS_DIR, newFilename);
+
+        if (oldAbsolutePath === newAbsolutePath) { // File already has the target name
+            try {
+                await fsp.access(oldAbsolutePath); // Just check existence
+                processedKeptImages.push({ url: `/uploads/${newFilename}`, caption: keptImage.caption || '' });
+                console.log(`✅ Kept image ${newFilename} already correctly named and exists.`);
+            } catch (e) {
+                console.warn(`⚠️ Kept image ${oldAbsolutePath} (intended new name ${newFilename}) not found. Skipping.`);
+            }
+        } else { // Rename is needed
+            try {
+                await fsp.access(oldAbsolutePath); // Check if old file exists
+                await fsp.rename(oldAbsolutePath, newAbsolutePath);
+                processedKeptImages.push({ url: `/uploads/${newFilename}`, caption: keptImage.caption || '' });
+                console.log(`🔄 Renamed kept image from ${oldFilenameRelative} to ${newFilename}`);
+            } catch (error) {
+                console.warn(`⚠️ Failed to rename or access kept image ${oldAbsolutePath} to ${newAbsolutePath}: ${error.message}.`);
+                // Fallback: if original file still exists, keep its old record. Otherwise, it's lost.
+                try {
+                    await fsp.access(oldAbsolutePath);
+                    processedKeptImages.push({ url: keptImage.url, caption: keptImage.caption || '' });
+                    console.warn(`↪️ Kept image ${oldFilenameRelative} will retain its old URL after failed rename attempt.`);
+                } catch (fallbackAccessError) {
+                    console.error(`❌ Old kept image ${oldAbsolutePath} is also not accessible. Image removed from kept list.`);
+                }
+            }
+        }
+        currentIndex++;
+    }
+    return { processedImageObjects: processedKeptImages, nextAvailableIndex: currentIndex };
+};
+
+// Processes newly uploaded temporary files: renames them according to the docket and an index.
+const processNewUploadedFiles = async (tempFiles = [], docketBase, bodyForCaptions = {}, startIndex = 1) => {
+    if (!tempFiles || tempFiles.length === 0) return { processedImageObjects: [], nextAvailableIndex: startIndex };
+
+    const sanitizedDocket = docketBase.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const newImageObjects = [];
+    let currentIndex = startIndex;
+
+    for (let i = 0; i < tempFiles.length; i++) {
+        const tempFile = tempFiles[i]; // multer file object
+        const tempPath = tempFile.path;
+        const originalExtension = path.extname(tempFile.originalname);
+        const newFilename = `${sanitizedDocket}-${currentIndex}${originalExtension}`;
+        const newAbsolutePath = path.join(UPLOADS_DIR, newFilename);
+
+        try {
+            await fsp.rename(tempPath, newAbsolutePath);
+            newImageObjects.push({
+                url: `/uploads/${newFilename}`,
+                caption: bodyForCaptions[`imageCaptions[${i}]`] || tempFile.originalname // Captions from form using `imageCaptions[index]`
+            });
+            console.log(`✨ Processed new image: ${tempFile.filename} to ${newFilename}`);
+        } catch (renameError) {
+            console.error(`❌ Error renaming new file ${tempPath} to ${newAbsolutePath}:`, renameError);
+            // Attempt to delete the temporary file if rename failed
+            try { await fsp.unlink(tempPath); } catch (e) { console.error(`💀 Failed to delete temp file ${tempPath} after rename error:`, e); }
+        }
+        currentIndex++;
+    }
+    return { processedImageObjects: newImageObjects, nextAvailableIndex: currentIndex };
+};
+
+
+// --- Authentication & Authorization ---
 const authSchemas = {
-    signup: Joi.object({
-        email: Joi.string().email().required(),
-        password: Joi.string().min(6).required(),
-    }),
     login: Joi.object({
         email: Joi.string().email().required(),
-        password: Joi.string().required(), // Min length checked during bcrypt comparison
+        password: Joi.string().required(),
     })
 };
 
-// Middleware factory to validate request body against a Joi schema
 const validateBody = (schemaName) => (req, res, next) => {
     const schema = authSchemas[schemaName];
     if (!schema) {
-        console.error(`Schema ${schemaName} not found`); // Should not happen
+        console.error(`Schema ${schemaName} not found`);
         return next(new Error(`Server configuration error: Schema ${schemaName} missing.`));
     }
     const { error } = schema.validate(req.body);
@@ -218,56 +362,81 @@ const validateBody = (schemaName) => (req, res, next) => {
     next();
 };
 
-// --- Auth Controller ---
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
 
-const signup = async (req, res) => {
-    const { email, password } = req.body;
-    const lowerCaseEmail = email.toLowerCase();
-    const existingUser = await User.findOne({ email: lowerCaseEmail });
-    if (existingUser) {
-        return res.status(409).json({ message: "Email already registered.", success: false });
+    if (token == null) {
+        return res.status(401).json({ message: 'Authentication token required.', success: false });
     }
-    const hashedPassword = await bcrypt.hash(password, 10);
-    await User.create({ email: lowerCaseEmail, password: hashedPassword });
-    res.status(201).json({ message: "Signup successful!", success: true });
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            console.error("JWT Verification Error:", err.message);
+            if (err.name === 'TokenExpiredError') {
+                return res.status(401).json({ message: 'Token expired. Please log in again.', success: false, code: 'TOKEN_EXPIRED' });
+            }
+            return res.status(403).json({ message: 'Invalid token.', success: false, code: 'INVALID_TOKEN' });
+        }
+        req.user = user;
+        next();
+    });
 };
 
-const login = async (req, res) => {
+const checkRole = (requiredRole) => {
+    return (req, res, next) => {
+        if (!req.user) { // Should be caught by authenticateToken first
+            return res.status(401).json({ message: 'Authentication required.', success: false });
+        }
+        if (req.user.role !== requiredRole && req.user.role !== 'admin') { // Allow admin to bypass specific role checks if desired
+             if (requiredRole === 'admin' && req.user.role !== 'admin') { // If specifically admin role is required
+                return res.status(403).json({ message: `Access denied. Requires ${requiredRole} role. You are ${req.user.role}.`, success: false });
+             } else if (requiredRole !== 'admin') { // For roles other than admin, only that role or admin passes
+                return res.status(403).json({ message: `Access denied. Requires ${requiredRole} (or admin) role. You are ${req.user.role}.`, success: false });
+             }
+        }
+        next();
+    };
+};
+
+
+// --- Routes ---
+app.post("/auth/login", validateBody('login'), asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const lowerCaseEmail = email.toLowerCase();
-    const user = await User.findOne({ email: lowerCaseEmail });
+    const user = await User.findOne({ email: lowerCaseEmail }).select('+password +role');
 
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    if (!user) {
         return res.status(401).json({ message: "Authentication failed. Invalid email or password.", success: false });
     }
 
-    const payload = { email: user.email, userId: user._id };
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+        return res.status(401).json({ message: "Authentication failed. Invalid email or password.", success: false });
+    }
+
+    const payload = {
+        email: user.email,
+        userId: user._id,
+        role: user.role
+    };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "1h" });
+
     res.status(200).json({
         message: "Login successful!",
         success: true,
         token,
-        user: { email: user.email, id: user._id } // Send back basic user info
+        user: { email: user.email, id: user._id, role: user.role }
     });
-};
+}));
 
-// --- API Routes ---
-
-// Auth
-app.post("/auth/signup", validateBody('signup'), asyncHandler(signup));
-app.post("/auth/login", validateBody('login'), asyncHandler(login));
-
-// --- Technology CRUD ---
-
-// GET /technologies - List all technologies
-app.get("/technologies", asyncHandler(async (req, res) => {
+// --- Technology Routes ---
+app.get("/technologies", authenticateToken, asyncHandler(async (req, res) => {
     const techs = await TechDetail.find({}).sort({ createdAt: -1 });
     res.json(techs);
 }));
 
-// GET /technologies/:id - Get a single technology by its unique ID (docket)
-app.get("/technologies/:id", asyncHandler(async (req, res) => {
-    // Use the 'id' field which should be unique (enforced by schema/logic)
+app.get("/technologies/:id", authenticateToken, asyncHandler(async (req, res) => {
     const tech = await TechDetail.findOne({ id: req.params.id });
     if (!tech) {
         return res.status(404).json({ message: "Technology not found" });
@@ -275,203 +444,276 @@ app.get("/technologies/:id", asyncHandler(async (req, res) => {
     res.json(tech);
 }));
 
-// POST /technologies - Create a new technology
-app.post("/technologies", handleMulterUpload, multerErrorHandler, asyncHandler(async (req, res, next) => {
-    // Parse specific fields before validation or processing
-    let techData = parseTechDataFields({ ...req.body });
-    const { genre } = techData;
+app.post("/technologies",
+    authenticateToken,
+    handleTemporaryMulterUpload, // Use temporary multer upload
+    multerErrorHandler,
+    asyncHandler(async (req, res, next) => {
+        let techData = parseTechDataFields({ ...req.body });
+        const { genre } = techData;
+        let tempUploadedFileObjects = req.files ? req.files.map(f => ({ url: `/uploads/${f.filename}` })) : []; // For cleanup
 
-    if (!genre || typeof genre !== 'string' || !genre.trim()) {
-        return res.status(400).json({ message: "Genre is required to create a technology." });
-    }
-
-    try {
-        const newDocket = await generateNewDocket(genre);
-        techData.docket = newDocket;
-        techData.id = newDocket; // Use the generated docket as the unique ID
-        techData.images = mapFilesToImageData(req.files, req.body); // Process uploaded images
-
-        const newTech = new TechDetail(techData);
-        const savedTech = await newTech.save();
-        res.status(201).json(savedTech);
-    } catch (error) {
-        // Handle potential duplicate key error specifically for the generated ID
-        if (error.code === 11000 && error.keyPattern?.id) {
-             return res.status(409).json({ message: `Failed to create: ID ${techData.id} conflict (likely race condition). Please try again.` });
+        if (!genre || typeof genre !== 'string' || !genre.trim()) {
+            if (tempUploadedFileObjects.length > 0) await deleteImageFiles(tempUploadedFileObjects);
+            return res.status(400).json({ message: "Genre is required to create a technology." });
         }
-        next(error); // Pass other errors (like validation) to the global handler
-    }
-}));
 
-// PUT /technologies/:id - Update an existing technology
-app.put("/technologies/:id", handleMulterUpload, multerErrorHandler, asyncHandler(async (req, res, next) => {
-    const currentId = req.params.id; // The ID of the tech being updated
-    let incomingData = parseTechDataFields({ ...req.body }); // Parse fields like arrays, including 'existingImages'
-
-    const currentTech = await TechDetail.findOne({ id: currentId });
-    if (!currentTech) {
-        return res.status(404).json({ message: `Technology with ID ${currentId} not found` });
-    }
-
-    const oldGenre = currentTech.genre;
-    const newGenre = incomingData.genre ? incomingData.genre.trim() : oldGenre; // Use new genre if provided, else keep old
-    let finalUpdateData = { ...incomingData }; // Start with all incoming data
-    let newGeneratedId = null;
-
-    // --- Handle Potential ID/Docket Change due to Genre Change ---
-    if (newGenre.toUpperCase() !== oldGenre.toUpperCase()) {
+        let newDocket;
+        let finalImages = [];
         try {
-            newGeneratedId = await generateNewDocket(newGenre);
-            // Check if this new ID already exists *excluding the current document*
-            const existingWithNewId = await TechDetail.findOne({ id: newGeneratedId, _id: { $ne: currentTech._id } }).lean();
-            if (existingWithNewId) {
-                 return res.status(409).json({ message: `Update conflict: Generated ID ${newGeneratedId} for new genre already exists.` });
-            }
-            finalUpdateData.docket = newGeneratedId;
-            finalUpdateData.id = newGeneratedId; // Update ID
-            finalUpdateData.genre = newGenre; // Ensure new genre is saved
+            newDocket = await generateNewDocket(genre);
+            techData.docket = newDocket;
+            techData.id = newDocket; // ID is the same as docket
+
+            // Process uploaded images: rename and get final image data
+            const { processedImageObjects } = await processNewUploadedFiles(req.files, newDocket, req.body, 1);
+            finalImages = processedImageObjects;
+            techData.images = finalImages;
+
+            const newTech = new TechDetail(techData);
+            const savedTech = await newTech.save();
+            res.status(201).json(savedTech);
         } catch (error) {
-            return next(new Error(`Failed to generate new docket for genre '${newGenre}': ${error.message}`));
+            // Cleanup successfully renamed files if DB save fails, or temp files if renaming didn't complete
+            if (finalImages.length > 0) { // Files were renamed
+                await deleteImageFiles(finalImages);
+            } else if (tempUploadedFileObjects.length > 0) { // Files were only temporary
+                await deleteImageFiles(tempUploadedFileObjects);
+            }
+
+            if (error.code === 11000 && (error.keyPattern?.id || error.keyPattern?.docket)) {
+                return res.status(409).json({ message: `Failed to create: ID/Docket ${newDocket || 'unknown'} conflict. Please try again or check data.`, code: 'DUPLICATE_ID' });
+            }
+            next(error); // Pass to generic error handler
         }
-    } else {
-        // Genre hasn't changed, explicitly remove id/docket from update data
-        // to prevent accidental modification and ensure `id` remains the unique key.
-        delete finalUpdateData.id;
-        delete finalUpdateData.docket;
-        finalUpdateData.genre = oldGenre; // Ensure genre (even if same case) is explicitly set
-    }
+    })
+);
 
-    // --- Handle Image Updates ---
-    const newlyUploadedImages = mapFilesToImageData(req.files, req.body);
+app.put("/technologies/:id",
+    authenticateToken,
+    handleTemporaryMulterUpload, // Use temporary multer upload
+    multerErrorHandler,
+    asyncHandler(async (req, res, next) => {
+        const currentTechId = req.params.id; // This is the OLD docket/id
+        let incomingData = parseTechDataFields({ ...req.body }); // `existingImages` is parsed here
+        let tempUploadedFileObjects = req.files ? req.files.map(f => ({ url: `/uploads/${f.filename}` })) : []; // For cleanup
 
-    // `existingImages` should be an array of {url, caption} objects sent from frontend
-    // representing images to keep (potentially with updated captions).
-    const imagesToKeepFromRequest = Array.isArray(finalUpdateData.existingImages) ? finalUpdateData.existingImages : [];
-
-    // Determine which images currently in the DB are *not* in the keep list
-    const currentImageUrls = currentTech.images?.map(img => img.url) || [];
-    const urlsToKeep = imagesToKeepFromRequest.map(img => img?.url).filter(Boolean);
-    const urlsToDelete = currentImageUrls.filter(url => !urlsToKeep.includes(url));
-    const imagesToDelete = currentTech.images?.filter(img => urlsToDelete.includes(img.url)) || [];
-
-    // Delete physical files for removed images
-    await deleteImageFiles(imagesToDelete);
-
-    // Combine images kept (with potentially updated captions) and new uploads
-    finalUpdateData.images = [...imagesToKeepFromRequest, ...newlyUploadedImages];
-    delete finalUpdateData.existingImages; // Clean up temporary field
-
-    // --- Perform Update ---
-    try {
-        const updatedTech = await TechDetail.findOneAndUpdate(
-            { id: currentId },       // Find by the original ID
-            { $set: finalUpdateData }, // Use $set for cleaner update
-            { new: true, runValidators: true } // Return updated doc, run schema validators
-        );
-
-        if (!updatedTech) { // Should be rare if findOne check passed, but handles race conditions
-            return res.status(404).json({ message: "Technology not found during final update attempt." });
+        const currentTech = await TechDetail.findOne({ id: currentTechId });
+        if (!currentTech) {
+            if (tempUploadedFileObjects.length > 0) await deleteImageFiles(tempUploadedFileObjects);
+            return res.status(404).json({ message: `Technology with ID ${currentTechId} not found` });
         }
-        res.json(updatedTech);
-    } catch (error) {
-        // Handle potential duplicate key error if the *new* ID conflicts (only if genre changed)
-        if (error.code === 11000 && newGeneratedId && error.keyPattern?.id) {
-            return res.status(409).json({ message: `Update failed: Conflict with generated ID ${newGeneratedId}.` });
+
+        const oldDocket = currentTech.docket;
+        const oldGenre = currentTech.genre;
+        const newGenre = incomingData.genre ? incomingData.genre.trim() : oldGenre;
+
+        let finalUpdateData = { ...incomingData };
+        let docketForFileNaming = oldDocket; // Docket to be used for naming image files
+
+        if (newGenre.toUpperCase() !== oldGenre.toUpperCase()) {
+            try {
+                const newGeneratedDocket = await generateNewDocket(newGenre);
+                const existingWithNewId = await TechDetail.findOne({ id: newGeneratedDocket, _id: { $ne: currentTech._id } }).lean();
+                if (existingWithNewId) {
+                    if (tempUploadedFileObjects.length > 0) await deleteImageFiles(tempUploadedFileObjects);
+                    return res.status(409).json({ message: `Update conflict: Generated ID ${newGeneratedDocket} for new genre already exists.`, code: 'DUPLICATE_ID_ON_UPDATE' });
+                }
+                finalUpdateData.docket = newGeneratedDocket;
+                finalUpdateData.id = newGeneratedDocket; // Update id as well
+                finalUpdateData.genre = newGenre;
+                docketForFileNaming = newGeneratedDocket;
+            } catch (error) {
+                if (tempUploadedFileObjects.length > 0) await deleteImageFiles(tempUploadedFileObjects);
+                return next(new Error(`Failed to generate new docket for genre '${newGenre}': ${error.message}`));
+            }
+        } else {
+            // Genre didn't change, docket remains the same.
+            delete finalUpdateData.id; // Prevent accidental change if sent in body
+            delete finalUpdateData.docket; // Prevent accidental change
+            finalUpdateData.genre = oldGenre; // Ensure it's the original genre from DB
+            // docketForFileNaming remains oldDocket
         }
-        next(error); // Pass validation or other errors
-    }
-}));
 
-// DELETE /technologies/:id - Delete a technology
-app.delete("/technologies/:id", asyncHandler(async (req, res) => {
-    const techId = req.params.id;
-    const tech = await TechDetail.findOne({ id: techId });
-    if (!tech) {
-        return res.status(404).json({ message: "Technology not found" });
-    }
+        // --- Image Handling ---
+        const imagesToKeepFromRequest = Array.isArray(finalUpdateData.existingImages) ? finalUpdateData.existingImages : [];
+        const urlsToKeepInRequest = imagesToKeepFromRequest.map(img => img?.url).filter(Boolean);
 
-    // Delete associated image files first
-    await deleteImageFiles(tech.images);
+        // Identify images to delete (those in currentTech.images not in urlsToKeepInRequest)
+        const imagesToDeletePhysically = currentTech.images?.filter(img => img && !urlsToKeepInRequest.includes(img.url)) || [];
+        await deleteImageFiles(imagesToDeletePhysically);
 
-    // Delete the database record
-    const deletionResult = await TechDetail.deleteOne({ id: techId });
-    if (deletionResult.deletedCount === 0) {
-        // Should be rare if findOne worked, but handles race conditions
-        return res.status(404).json({ message: "Technology not found during deletion attempt." });
-    }
-    res.json({ message: "Technology deleted successfully", id: techId });
-}));
+        let currentFileIndex = 1;
+        // Process images to keep: rename if docket changed, and assign new indexed names
+        const { processedImageObjects: finalKeptImages, nextAvailableIndex: nextIndexAfterKept } =
+            await renameKeptImagesAndAssignNewNames(imagesToKeepFromRequest, docketForFileNaming, currentFileIndex);
+        currentFileIndex = nextIndexAfterKept;
 
-// --- Event CRUD --- (Kept simple)
+        // Process newly uploaded files (req.files)
+        const { processedImageObjects: newlyUploadedAndProcessedImages, nextAvailableIndex: finalNextIndex } =
+            await processNewUploadedFiles(req.files, docketForFileNaming, req.body, currentFileIndex);
 
-app.get("/events", asyncHandler(async (req, res) => {
-    const events = await Event.find({}).sort({ day: 1, title: 1 }); // Example sort
+        finalUpdateData.images = [...finalKeptImages, ...newlyUploadedAndProcessedImages];
+        delete finalUpdateData.existingImages; // Clean this temporary field from the update data
+
+        try {
+            const updatedTech = await TechDetail.findOneAndUpdate(
+                { id: currentTechId }, // Find by the original ID
+                { $set: finalUpdateData },
+                { new: true, runValidators: true }
+            );
+
+            if (!updatedTech) {
+                // Tech not found during final update, maybe deleted in interim. Clean up processed images.
+                await deleteImageFiles(finalUpdateData.images); // These files now have final names
+                return res.status(404).json({ message: "Technology not found during final update attempt." });
+            }
+            res.json(updatedTech);
+        } catch (error) {
+            // If update fails, attempt to delete newly processed files (both renamed kept and new ones)
+            // This is a best-effort cleanup. A full rollback is more complex.
+            await deleteImageFiles(finalUpdateData.images);
+
+            if (error.code === 11000 && (error.keyPattern?.id || error.keyPattern?.docket)) {
+                return res.status(409).json({ message: `Update failed: Conflict with ID/Docket ${finalUpdateData.id || docketForFileNaming}.`, code: 'DUPLICATE_ID_ON_UPDATE' });
+            }
+            next(error);
+        }
+    })
+);
+
+
+app.delete("/technologies/:id",
+    authenticateToken,
+    // checkRole('admin'), // Kept commented as in original
+    asyncHandler(async (req, res) => {
+        const techId = req.params.id;
+        const tech = await TechDetail.findOne({ id: techId });
+
+        if (!tech) {
+            return res.status(404).json({ message: "Technology not found" });
+        }
+
+        // Delete associated images from filesystem
+        if (tech.images && tech.images.length > 0) {
+            await deleteImageFiles(tech.images);
+        }
+
+        const deletionResult = await TechDetail.deleteOne({ id: techId });
+        if (deletionResult.deletedCount === 0) {
+            // Should not happen if findOne found it, but as a safeguard
+            return res.status(404).json({ message: "Technology not found during deletion attempt." });
+        }
+        res.json({ message: "Technology deleted successfully", id: techId });
+    })
+);
+
+
+// --- Event Routes (largely unchanged, ensure checkRole for sensitive ops) ---
+app.get("/events", authenticateToken, asyncHandler(async (req, res) => {
+    const events = await Event.find({}).sort({ day: 1, title: 1 });
     res.json(events);
 }));
 
-app.get("/events/:title/:day", asyncHandler(async (req, res) => {
-    const { title, day } = req.params;
+app.get("/events/:title/:day", authenticateToken, asyncHandler(async (req, res) => {
+    const title = decodeURIComponent(req.params.title);
+    const day = decodeURIComponent(req.params.day);
     const event = await Event.findOne({ title, day });
     if (!event) return res.status(404).json({ message: "Event not found" });
     res.json(event);
 }));
 
-app.post("/events", asyncHandler(async (req, res) => {
-    // Add validation if needed (e.g., using Joi)
-    const newEvent = new Event(req.body);
-    const savedEvent = await newEvent.save();
-    res.status(201).json(savedEvent);
+app.post("/events", authenticateToken, checkRole('admin'), asyncHandler(async (req, res, next) => { // Added checkRole
+    try {
+        const newEvent = new Event(req.body);
+        const savedEvent = await newEvent.save();
+        res.status(201).json(savedEvent);
+    } catch (error) {
+        if (error.code === 11000 && error.keyPattern?.title && error.keyPattern?.day) {
+            return res.status(409).json({ message: `Event with title "${req.body.title}" on day "${req.body.day}" already exists.`, code: 'DUPLICATE_EVENT' });
+        }
+        next(error);
+    }
 }));
 
-app.put("/events/:title/:day", asyncHandler(async (req, res) => {
-    const { title, day } = req.params;
-    // Add validation if needed
-    const updatedEvent = await Event.findOneAndUpdate({ title, day }, req.body, { new: true, runValidators: true });
-    if (!updatedEvent) return res.status(404).json({ message: "Event not found" });
-    res.json(updatedEvent);
-}));
+app.put("/events/:title/:day",
+    authenticateToken,
+    checkRole('admin'),
+    asyncHandler(async (req, res, next) => {
+        const title = decodeURIComponent(req.params.title);
+        const day = decodeURIComponent(req.params.day);
+        try {
+            const updatedEvent = await Event.findOneAndUpdate(
+                { title, day },
+                req.body,
+                { new: true, runValidators: true }
+            );
+            if (!updatedEvent) return res.status(404).json({ message: "Event not found" });
+            res.json(updatedEvent);
+        } catch (error) {
+            if (error.code === 11000 && error.keyPattern?.title && error.keyPattern?.day) {
+                // Check if the conflict is with a *different* document
+                const conflictingEvent = await Event.findOne({ title: req.body.title, day: req.body.day });
+                if (conflictingEvent && String(conflictingEvent._id) !== String(req.body._id)) { // If _id is part of req.body and helps identify
+                     return res.status(409).json({ message: `Update failed: An event with title "${req.body.title}" on day "${req.body.day}" already exists.`, code: 'DUPLICATE_EVENT_ON_UPDATE' });
+                }
+                 // If it's the same document, other validation error might be at play or no actual change causing duplicate error
+            }
+            next(error);
+        }
+    })
+);
 
-app.delete("/events/:title/:day", asyncHandler(async (req, res) => {
-    const { title, day } = req.params;
-    const deletedEvent = await Event.findOneAndDelete({ title, day });
-    if (!deletedEvent) return res.status(404).json({ message: "Event not found" });
-    res.json({ message: "Event deleted successfully", title, day });
-}));
+app.delete("/events/:title/:day",
+    authenticateToken,
+    checkRole('admin'),
+    asyncHandler(async (req, res) => {
+        const title = decodeURIComponent(req.params.title);
+        const day = decodeURIComponent(req.params.day);
+        const deletedEvent = await Event.findOneAndDelete({ title, day });
+        if (!deletedEvent) return res.status(404).json({ message: "Event not found" });
+        res.json({ message: "Event deleted successfully", title, day });
+    })
+);
 
-// --- Global Error Handler ---
-// Catches errors from asyncHandler and unhandled sync/async errors
+// --- Generic Error Handler ---
 app.use((err, req, res, next) => {
     console.error("❌ Unhandled Error:", err.message);
     if (NODE_ENV === 'development' && err.stack) {
-        console.error(err.stack); // Log stack trace only in dev
+        console.error(err.stack);
     }
 
-    // Default error details
-    let statusCode = err.status || 500;
+    let statusCode = err.status || err.statusCode || 500; // Prefer err.statusCode if available
     let message = err.message || "An internal server error occurred.";
+    let errorCode = err.code;
 
-    // Handle specific Mongoose errors for better client feedback
-    if (err.name === 'ValidationError') {
-        statusCode = 400; // Bad Request
+    if (err.name === 'ValidationError') { // Mongoose validation error
+        statusCode = 400;
         message = Object.values(err.errors).map(val => val.message).join(', ');
-    } else if (err.name === 'CastError') {
-        statusCode = 400; // Bad Request
-        message = `Invalid format for field '${err.path}'. Expected type ${err.kind}.`;
-    } else if (err.code === 11000) { // Duplicate key error (if not caught specifically earlier)
-        statusCode = 409; // Conflict
-        const field = Object.keys(err.keyValue)[0];
-        message = field ? `Duplicate value for field: ${field}. Please use a unique value.` : "Duplicate key error.";
+        errorCode = errorCode || 'VALIDATION_ERROR';
+    } else if (err.name === 'CastError') { // Mongoose cast error
+        statusCode = 400;
+        message = `Invalid format for field '${err.path}'. Expected type ${err.kind}. Value: "${err.value}"`;
+        errorCode = errorCode || 'CAST_ERROR';
+    } else if (err.code === 11000) { // MongoDB duplicate key error
+        statusCode = 409;
+        const field = Object.keys(err.keyValue || {})[0];
+        message = field ? `Duplicate value for field: ${field}. Value: "${err.keyValue[field]}"` : "Duplicate key error.";
+        errorCode = errorCode || 'DUPLICATE_KEY';
     }
 
-    // If headers already sent, delegate to default Express error handler
     if (res.headersSent) {
-        return next(err);
+        return next(err); // Pass to default Express error handler if headers already sent
     }
 
-    res.status(statusCode).json({ message, success: false });
+    res.status(statusCode).json({
+        message,
+        success: false,
+        ...(errorCode && { code: errorCode }),
+        ...(NODE_ENV === 'development' && { stack: err.stack }) // Optionally send stack in dev
+    });
 });
 
-// --- Start Server ---
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT} [${NODE_ENV}]`);
 });
