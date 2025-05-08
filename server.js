@@ -401,32 +401,55 @@ const checkRole = (requiredRole) => {
 
 
 // --- Routes ---
+// In server.js, within your app.post("/auth/login", ...) route:
+
 app.post("/auth/login", validateBody('login'), asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const lowerCaseEmail = email.toLowerCase();
+
+    console.log(`[LOGIN_IP_DEBUG] Attempting login for email: ${lowerCaseEmail}`);
+
+    // Fetch user from DB. Given your schema, +role is not strictly needed but fine.
     const user = await User.findOne({ email: lowerCaseEmail }).select('+password +role');
 
     if (!user) {
+        console.log(`[LOGIN_IP_DEBUG] User not found in DB for email: ${lowerCaseEmail}`);
         return res.status(401).json({ message: "Authentication failed. Invalid email or password.", success: false });
     }
 
+    // --- MOST IMPORTANT LOG ---
+    // Log the raw user object fetched from MongoDB
+    console.log("[LOGIN_IP_DEBUG] User data fetched from DB (server-side):", JSON.stringify(user, null, 2));
+    // Specifically check if 'user.role' is present here in your server logs when accessing via IP.
+
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
+        console.log(`[LOGIN_IP_DEBUG] Password mismatch for email: ${lowerCaseEmail}`);
         return res.status(401).json({ message: "Authentication failed. Invalid email or password.", success: false });
     }
 
     const payload = {
         email: user.email,
         userId: user._id,
-        role: user.role
+        role: user.role // This depends on 'user.role' being defined from the DB fetch
     };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "1h" });
+
+    const userResponseObject = {
+        email: user.email,
+        id: user._id,
+        role: user.role // This is what will be sent to the client
+    };
+
+    // --- ALSO IMPORTANT LOG ---
+    // Log the object that is about to be sent to the client
+    console.log("[LOGIN_IP_DEBUG] User object being sent in response (server-side):", JSON.stringify(userResponseObject, null, 2));
 
     res.status(200).json({
         message: "Login successful!",
         success: true,
         token,
-        user: { email: user.email, id: user._id, role: user.role }
+        user: userResponseObject
     });
 }));
 
