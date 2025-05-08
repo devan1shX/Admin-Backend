@@ -383,19 +383,27 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-const checkRole = (requiredRole) => {
+const checkRole = (requiredRoles) => {
     return (req, res, next) => {
-        if (!req.user) { // Should be caught by authenticateToken first
+        if (!req.user) { // Should ideally be caught by authenticateToken first
             return res.status(401).json({ message: 'Authentication required.', success: false });
         }
-        if (req.user.role !== requiredRole && req.user.role !== 'admin') { // Allow admin to bypass specific role checks if desired
-             if (requiredRole === 'admin' && req.user.role !== 'admin') { // If specifically admin role is required
-                return res.status(403).json({ message: `Access denied. Requires ${requiredRole} role. You are ${req.user.role}.`, success: false });
-             } else if (requiredRole !== 'admin') { // For roles other than admin, only that role or admin passes
-                return res.status(403).json({ message: `Access denied. Requires ${requiredRole} (or admin) role. You are ${req.user.role}.`, success: false });
-             }
+
+        // Ensure requiredRoles is an array for consistent processing
+        const rolesArray = Array.isArray(requiredRoles) ? requiredRoles : [requiredRoles];
+
+        // Check if the user's role is included in the array of required roles.
+        // Also, always allow 'admin' to bypass specific role checks if you want
+        // an admin to have universal access, regardless of the specific roles listed.
+        // If you want strict adherence ONLY to the roles in rolesArray, remove "|| req.user.role === 'admin'"
+        if (rolesArray.includes(req.user.role) || req.user.role === 'admin') {
+            next(); // User has one of the required roles (or is admin), proceed
+        } else {
+            return res.status(403).json({
+                message: `Access denied. Requires one of the following roles: ${rolesArray.join(', ')}. You are ${req.user.role}.`,
+                success: false
+            });
         }
-        next();
     };
 };
 
@@ -646,7 +654,8 @@ app.get("/events/:title/:day", authenticateToken, asyncHandler(async (req, res) 
     res.json(event);
 }));
 
-app.post("/events", authenticateToken, checkRole('admin'), asyncHandler(async (req, res, next) => { // Added checkRole
+// Ensure this route uses the updated checkRole logic
+app.post("/events", authenticateToken, checkRole(['admin', 'employee']), asyncHandler(async (req, res, next) => {
     try {
         const newEvent = new Event(req.body);
         const savedEvent = await newEvent.save();
@@ -659,9 +668,10 @@ app.post("/events", authenticateToken, checkRole('admin'), asyncHandler(async (r
     }
 }));
 
+// For PUT and DELETE, you might still want to restrict to 'admin' only, or update as needed
 app.put("/events/:title/:day",
     authenticateToken,
-    checkRole('admin'),
+    checkRole('admin'), // Or checkRole(['admin', 'employee']) if employees can also edit
     asyncHandler(async (req, res, next) => {
         const title = decodeURIComponent(req.params.title);
         const day = decodeURIComponent(req.params.day);
@@ -675,12 +685,13 @@ app.put("/events/:title/:day",
             res.json(updatedEvent);
         } catch (error) {
             if (error.code === 11000 && error.keyPattern?.title && error.keyPattern?.day) {
-                // Check if the conflict is with a *different* document
                 const conflictingEvent = await Event.findOne({ title: req.body.title, day: req.body.day });
-                if (conflictingEvent && String(conflictingEvent._id) !== String(req.body._id)) { // If _id is part of req.body and helps identify
+                // Check if the conflict is with a *different* document
+                // This check assumes _id is part of req.body if you're trying to identify the current doc during an update that might change title/day
+                // If _id is not reliably in req.body for this check, you might need a different approach or accept that a 409 might occur if title/day are changed to an existing combo.
+                if (conflictingEvent && (!req.body._id || String(conflictingEvent._id) !== String(req.body._id))) {
                      return res.status(409).json({ message: `Update failed: An event with title "${req.body.title}" on day "${req.body.day}" already exists.`, code: 'DUPLICATE_EVENT_ON_UPDATE' });
                 }
-                 // If it's the same document, other validation error might be at play or no actual change causing duplicate error
             }
             next(error);
         }
@@ -689,7 +700,7 @@ app.put("/events/:title/:day",
 
 app.delete("/events/:title/:day",
     authenticateToken,
-    checkRole('admin'),
+    checkRole('admin'), // Or checkRole(['admin', 'employee']) if employees can also delete
     asyncHandler(async (req, res) => {
         const title = decodeURIComponent(req.params.title);
         const day = decodeURIComponent(req.params.day);
