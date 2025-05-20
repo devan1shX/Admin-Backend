@@ -1,4 +1,3 @@
-// ----- MODELS FILE (e.g., models.js) -----
 import { Schema, model } from "mongoose";
 
 const techDetailSchema = new Schema({
@@ -12,7 +11,8 @@ const techDetailSchema = new Schema({
     innovators: [
         {
             name: String,
-            mail: String
+            mail: String,
+            _id: false
         }
     ],
     advantages: [String],
@@ -22,6 +22,7 @@ const techDetailSchema = new Schema({
         {
             title: String,
             url: String,
+            _id: false
         },
     ],
     technicalSpecifications: String,
@@ -31,9 +32,17 @@ const techDetailSchema = new Schema({
         {
             url: String,
             caption: String,
+            _id: false
         }
     ],
     patent: String,
+    brochures: [
+        {
+            url: { type: String, required: true },
+            originalName: { type: String, required: true },
+            _id: false
+        }
+    ],
 });
 
 techDetailSchema.index({ overview: "text", detailedDescription: "text" });
@@ -54,16 +63,3 @@ const eventSchema = new Schema({
 eventSchema.index({ title: 1, day: 1 }, { unique: true });
 
 export const Event = model("Event", eventSchema, "Events");
-
-const userSchema = new Schema({
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    password: { type: String, required: true },
-    role: {
-        type: String,
-        required: true,
-        enum: ['admin', 'employee'],
-        default: 'employee'
-    }
-}, { timestamps: true });
-
-export const User = model("User", userSchema);
