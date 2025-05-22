@@ -1395,7 +1395,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  fs.mkdirSync(BROCHURES_DIR_ABS, { recursive: true });
+app.listen(PORT, '0.0.0.0', () => { // <--- Added '0.0.0.0' here
+  console.log(`Admin Backend server running on http://0.0.0.0:${PORT}`); // Added a log
+  // Create directories after the server starts listening
+  try {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+    console.log(`Created/Ensured directory: ${UPLOADS_DIR}`);
+    fs.mkdirSync(BROCHURES_DIR_ABS, { recursive: true });
+    console.log(`Created/Ensured directory: ${BROCHURES_DIR_ABS}`);
+  } catch (error) {
+    console.error("Error creating directories:", error);
+  }
 });
