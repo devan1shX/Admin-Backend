@@ -35,7 +35,16 @@ const techDetailSchema = new Schema({
             _id: false
         }
     ],
-    patent: String,
+    patent: {
+        type: String,
+        enum: ["Not Filed", "Application Filed", "Under Examination", "Granted", "Abandoned/Lapsed"], // Updated professional terms
+        required: true
+    },
+    patentId: { type: String },
+    patentApplicationNumber: { type: String },
+    patentFilingDate: { type: Date },
+    patentGrantDate: { type: Date },
+    patentDocumentUrl: { type: String },
     brochures: [
         {
             url: { type: String, required: true },
