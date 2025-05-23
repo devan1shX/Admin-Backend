@@ -37,7 +37,7 @@ const techDetailSchema = new Schema({
     ],
     patent: {
         type: String,
-        enum: ["Not Filed", "Application Filed", "Under Examination", "Granted", "Abandoned/Lapsed"], // Updated professional terms
+        enum: ["Not Filed", "Application Filed", "Under Examination", "Granted", "Abandoned/Lapsed"], 
         required: true
     },
     patentId: { type: String },
