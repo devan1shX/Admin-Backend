@@ -31,6 +31,7 @@ const serviceAccountPath = path.join(
 );
 
 if (!fs.existsSync(serviceAccountPath)) {
+  console.error("Firebase service account key file not found!");
   process.exit(1);
 }
 
@@ -39,14 +40,15 @@ try {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccountPath),
     });
-  } else {
   }
 } catch (error) {
+  console.error("Firebase admin initialization error:", error);
   process.exit(1);
 }
 const firestore = admin.firestore();
 
 if (!MONGO_URI) {
+  console.error("MONGO_URI not found in environment variables!");
   process.exit(1);
 }
 
@@ -63,8 +65,11 @@ app.use("/brochures", express.static(BROCHURES_DIR_ABS));
 
 mongoose
   .connect(MONGO_URI)
-  .then(() => {})
+  .then(() => {
+    // console.log("MongoDB connected successfully."); // Uncomment for debugging
+  })
   .catch((err) => {
+    console.error("MongoDB connection error:", err);
     process.exit(1);
   });
 
@@ -202,6 +207,7 @@ const deleteImageFiles = async (imagesToDelete = []) => {
       const imagePath = path.join(UPLOADS_DIR, relativePathFromUploadsDir);
       return fsp.unlink(imagePath).catch((err) => {
         if (err.code !== "ENOENT") {
+          console.error(`Failed to delete image: ${imagePath}`, err);
         }
       });
     }
@@ -228,6 +234,7 @@ const deleteUploadedFile = async (fileServerPath) => {
     await fsp.unlink(physicalPath);
   } catch (err) {
     if (err.code !== "ENOENT") {
+      console.error(`Failed to delete file: ${physicalPath}`, err);
     }
   }
   return Promise.resolve();
@@ -258,7 +265,7 @@ const fileFilter = (req, file, cb) => {
         file.originalname,
         "latin1"
       ).toString("utf8");
-    } catch (e) {}
+    } catch (e) { }
   }
 
   if (file.fieldname === "brochureFiles") {
@@ -341,7 +348,7 @@ const renameKeptImagesAndAssignNewNames = async (
           url: `/uploads/${newFilename}`,
           caption: keptImage.caption || "",
         });
-      } catch (e) {}
+      } catch (e) { }
     } else {
       try {
         await fsp.access(oldAbsolutePath);
@@ -357,7 +364,7 @@ const renameKeptImagesAndAssignNewNames = async (
             url: keptImage.url,
             caption: keptImage.caption || "",
           });
-        } catch (fallbackAccessError) {}
+        } catch (fallbackAccessError) { }
       }
     }
     currentIndex++;
@@ -395,7 +402,7 @@ const processNewUploadedFiles = async (
     } catch (renameError) {
       try {
         await fsp.unlink(tempPath);
-      } catch (e) {}
+      } catch (e) { }
     }
     currentIndex++;
   }
@@ -431,7 +438,7 @@ const processNewBrochureFiles = async (tempBrochureFiles = []) => {
     } catch (renameError) {
       try {
         await fsp.unlink(tempPath);
-      } catch (e) {}
+      } catch (e) { }
     }
   }
   return processedBrochures;
@@ -574,7 +581,7 @@ const checkPermissions = (requiredAccess) => {
 };
 
 app.post(
-  "/auth/create-profile",
+  "/api/auth/create-profile", // CORRECTED
   verifyFirebaseToken,
   asyncHandler(async (req, res) => {
     const {
@@ -626,7 +633,7 @@ app.post(
 );
 
 app.get(
-  "/users/me",
+  "/api/users/me", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   asyncHandler(async (req, res) => {
@@ -635,7 +642,7 @@ app.get(
 );
 
 app.put(
-  "/users/:uid/permissions",
+  "/api/users/:uid/permissions", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   checkPermissions("superAdmin"),
@@ -729,6 +736,7 @@ app.put(
   })
 );
 
+// This route already has /api, so it's left unchanged
 app.get(
   "/api/admin/all-users",
   verifyFirebaseToken,
@@ -809,6 +817,7 @@ app.get(
   })
 );
 
+// This route already has /api, so it's left unchanged
 app.delete(
   "/api/admin/users/:uid",
   verifyFirebaseToken,
@@ -925,7 +934,7 @@ app.delete(
 );
 
 app.get(
-  "/technologies",
+  "/api/technologies", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   asyncHandler(async (req, res) => {
@@ -935,7 +944,7 @@ app.get(
 );
 
 app.get(
-  "/technologies/:id",
+  "/api/technologies/:id", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   asyncHandler(async (req, res) => {
@@ -946,7 +955,7 @@ app.get(
 );
 
 app.post(
-  "/technologies",
+  "/api/technologies", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   checkPermissions({ addTech: true }),
@@ -1038,7 +1047,7 @@ app.post(
 );
 
 app.put(
-  "/technologies/:id",
+  "/api/technologies/:id", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   checkPermissions({ editTech: true }),
@@ -1232,7 +1241,7 @@ app.put(
 );
 
 app.delete(
-  "/technologies/:id",
+  "/api/technologies/:id", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   checkPermissions({ deleteTech: true }),
@@ -1261,7 +1270,7 @@ app.delete(
 );
 
 app.get(
-  "/events",
+  "/api/events", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   asyncHandler(async (req, res) => {
@@ -1271,7 +1280,7 @@ app.get(
 );
 
 app.get(
-  "/events/:title/:day",
+  "/api/events/:title/:day", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   asyncHandler(async (req, res) => {
@@ -1284,7 +1293,7 @@ app.get(
 );
 
 app.post(
-  "/events",
+  "/api/events", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   checkPermissions({ addEvent: true }),
@@ -1304,7 +1313,7 @@ app.post(
 );
 
 app.put(
-  "/events/:title/:day",
+  "/api/events/:title/:day", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   checkPermissions({ editEvent: true }),
@@ -1347,7 +1356,7 @@ app.put(
 );
 
 app.delete(
-  "/events/:title/:day",
+  "/api/events/:title/:day", // CORRECTED
   verifyFirebaseToken,
   loadFirestoreUserProfile,
   checkPermissions({ deleteEvent: true }),
@@ -1396,6 +1405,7 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`); // Added log for confirmation
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
   fs.mkdirSync(BROCHURES_DIR_ABS, { recursive: true });
 });
