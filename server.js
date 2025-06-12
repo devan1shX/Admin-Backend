@@ -320,101 +320,111 @@ const multerErrorHandler = (err, req, res, next) => {
 };
 
 const renameKeptImagesAndAssignNewNames = async (
-  imagesToKeep,
-  newDocketBase,
-  startIndex = 1
+  imagesToKeep,
+  newDocketBase,
+  startIndex = 1
 ) => {
-  const sanitizedNewDocket = newDocketBase.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const processedKeptImages = [];
-  let currentIndex = startIndex;
-  for (const keptImage of imagesToKeep) {
-    if (
-      !keptImage?.url ||
-      typeof keptImage.url !== "string" ||
-      !keptImage.url.startsWith("/uploads/")
-    ) {
-      if (keptImage?.url)
-        processedKeptImages.push({
-          url: keptImage.url,
-          caption: keptImage.caption || "",
-        });
-      continue;
-    }
-    const oldFilenameRelative = keptImage.url.substring("/uploads/".length);
-    const oldAbsolutePath = path.join(UPLOADS_DIR, oldFilenameRelative);
-    const extension = path.extname(oldFilenameRelative);
-    const newFilename = `${sanitizedNewDocket}-${currentIndex}${extension}`;
-    const newAbsolutePath = path.join(UPLOADS_DIR, newFilename);
+  const sanitizedNewDocket = newDocketBase.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const processedKeptImages = [];
+  let currentIndex = startIndex;
+  for (const keptImage of imagesToKeep) {
+    if (
+      !keptImage?.url ||
+      typeof keptImage.url !== "string" ||
+      !keptImage.url.startsWith("/uploads/")
+    ) {
+      if (keptImage?.url)
+        processedKeptImages.push({
+          url: keptImage.url,
+          caption: keptImage.caption || "",
+        });
+      continue;
+    }
+    const oldFilenameRelative = keptImage.url.substring("/uploads/".length);
+    const oldAbsolutePath = path.join(UPLOADS_DIR, oldFilenameRelative);
+    const extension = path.extname(oldFilenameRelative);
+    const newFilename = `${sanitizedNewDocket}-${currentIndex}${extension}`;
+    const newAbsolutePath = path.join(UPLOADS_DIR, newFilename);
 
-    if (oldAbsolutePath === newAbsolutePath) {
-      try {
-        await fsp.access(oldAbsolutePath);
-        processedKeptImages.push({
-          url: `/uploads/${newFilename}`,
-          caption: keptImage.caption || "",
-        });
-      } catch (e) { }
-    } else {
-      try {
-        await fsp.access(oldAbsolutePath);
-        await fsp.rename(oldAbsolutePath, newAbsolutePath);
-        processedKeptImages.push({
-          url: `/uploads/${newFilename}`,
-          caption: keptImage.caption || "",
-        });
-      } catch (error) {
-        try {
-          await fsp.access(oldAbsolutePath);
-          processedKeptImages.push({
-            url: keptImage.url,
-            caption: keptImage.caption || "",
-          });
-        } catch (fallbackAccessError) { }
+    if (oldAbsolutePath === newAbsolutePath) {
+      try {
+        await fsp.access(oldAbsolutePath);
+        processedKeptImages.push({
+          url: `/uploads/${newFilename}`,
+          caption: keptImage.caption || "",
+        });
+      } catch (e) {
+        // If file doesn't exist, we just don't add it.
       }
-    }
-    currentIndex++;
-  }
-  return {
-    processedImageObjects: processedKeptImages,
-    nextAvailableIndex: currentIndex,
-  };
+    } else {
+      try {
+        // Ensure source file exists before attempting to move.
+        await fsp.access(oldAbsolutePath);
+        // copyFile will overwrite the destination. Then we unlink the old file.
+        await fsp.copyFile(oldAbsolutePath, newAbsolutePath);
+        await fsp.unlink(oldAbsolutePath);
+        processedKeptImages.push({
+          url: `/uploads/${newFilename}`,
+          caption: keptImage.caption || "",
+        });
+      } catch (error) {
+        // If the move fails, log the error and skip adding this image.
+        console.error(
+          `Failed to rename image from ${oldAbsolutePath} to ${newAbsolutePath}:`,
+          error
+        );
+      }
+    }
+    currentIndex++;
+  }
+  return {
+    processedImageObjects: processedKeptImages,
+    nextAvailableIndex: currentIndex,
+  };
 };
 
 const processNewUploadedFiles = async (
-  tempFiles = [],
-  docketBase,
-  bodyForCaptions = {},
-  startIndex = 1
+  tempFiles = [],
+  docketBase,
+  bodyForCaptions = {},
+  startIndex = 1
 ) => {
-  if (!tempFiles || tempFiles.length === 0)
-    return { processedImageObjects: [], nextAvailableIndex: startIndex };
-  const sanitizedDocket = docketBase.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const newImageObjects = [];
-  let currentIndex = startIndex;
-  for (let i = 0; i < tempFiles.length; i++) {
-    const tempFile = tempFiles[i];
-    const tempPath = tempFile.path;
-    const originalExtension = path.extname(tempFile.originalname);
-    const newFilename = `${sanitizedDocket}-${currentIndex}${originalExtension}`;
-    const newAbsolutePath = path.join(UPLOADS_DIR, newFilename);
-    try {
-      await fsp.rename(tempPath, newAbsolutePath);
-      newImageObjects.push({
-        url: `/uploads/${newFilename}`,
-        caption:
-          bodyForCaptions[`imageCaptions[${i}]`] || tempFile.originalname,
-      });
-    } catch (renameError) {
-      try {
-        await fsp.unlink(tempPath);
-      } catch (e) { }
-    }
-    currentIndex++;
-  }
-  return {
-    processedImageObjects: newImageObjects,
-    nextAvailableIndex: currentIndex,
-  };
+  if (!tempFiles || tempFiles.length === 0)
+    return { processedImageObjects: [], nextAvailableIndex: startIndex };
+  const sanitizedDocket = docketBase.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const newImageObjects = [];
+  let currentIndex = startIndex;
+  for (let i = 0; i < tempFiles.length; i++) {
+    const tempFile = tempFiles[i];
+    const tempPath = tempFile.path;
+    const originalExtension = path.extname(tempFile.originalname);
+    const newFilename = `${sanitizedDocket}-${currentIndex}${originalExtension}`;
+    const newAbsolutePath = path.join(UPLOADS_DIR, newFilename);
+    try {
+      // copyFile overwrites the destination by default. Then we remove the temp source file.
+      await fsp.copyFile(tempPath, newAbsolutePath);
+      await fsp.unlink(tempPath);
+
+      newImageObjects.push({
+        url: `/uploads/${newFilename}`,
+        caption:
+          bodyForCaptions[`imageCaptions[${i}]`] || tempFile.originalname,
+      });
+    } catch (moveError) {
+      // If the move fails, log it and ensure the temp file is cleaned up.
+      console.error(`Error moving ${tempPath} to ${newAbsolutePath}:`, moveError);
+      try {
+        await fsp.unlink(tempPath);
+      } catch (e) {
+        // Suppress error if temp file was already gone.
+      }
+    }
+    currentIndex++;
+  }
+  return {
+    processedImageObjects: newImageObjects,
+    nextAvailableIndex: currentIndex,
+  };
 };
 
 const processNewBrochureFiles = async (tempBrochureFiles = []) => {
