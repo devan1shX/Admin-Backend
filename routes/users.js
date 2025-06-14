@@ -61,6 +61,8 @@ export const loadFirestoreUserProfile = asyncHandler(async (req, res, next) => {
       });
     }
     req.user = { uid: req.firebaseDecodedToken.uid, ...userDoc.data() };
+    console.log("User object being passed to permissions check:", req.user);
+
     next();
   } catch (error) {
     return res.status(500).json({
