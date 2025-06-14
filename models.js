@@ -8,6 +8,15 @@ const techDetailSchema = new Schema({
     detailedDescription: String,
     genre: String,
     docket: { type: String, required: true, unique: true },
+    createdBy: {
+        userId: {
+            type: String,
+            required: true,
+            index: true
+        },
+        name: { type: String },
+        email: { type: String }
+    },
     innovators: [
         {
             name: String,
@@ -37,7 +46,7 @@ const techDetailSchema = new Schema({
     ],
     patent: {
         type: String,
-        enum: ["Not Filed", "Application Filed", "Under Examination", "Granted", "Abandoned/Lapsed"], 
+        enum: ["Not Filed", "Application Filed", "Under Examination", "Granted", "Abandoned/Lapsed"],
         required: true
     },
     patentId: { type: String },
@@ -52,6 +61,8 @@ const techDetailSchema = new Schema({
             _id: false
         }
     ],
+}, {
+    timestamps: {createdAt: 'createdAt', updatedAt: 'editedAt'}
 });
 
 techDetailSchema.index({ overview: "text", detailedDescription: "text" });
@@ -72,3 +83,76 @@ const eventSchema = new Schema({
 eventSchema.index({ title: 1, day: 1 }, { unique: true });
 
 export const Event = model("Event", eventSchema, "Events");
+
+
+
+const deletedTechSchema = new Schema({
+    id: { type: String, required: true },
+    name: { type: String, required: true },
+    description: String,
+    overview: String,
+    detailedDescription: String,
+    genre: String,
+    docket: { type: String, required: true },
+    createdBy: {
+        userId: {
+            type: String,
+            required: true,
+            index: true
+        },
+        name: { type: String },
+        email: { type: String }
+    },
+    innovators: [
+        {
+            name: String,
+            mail: String,
+            _id: false
+        }
+    ],
+    advantages: [String],
+    applications: [String],
+    useCases: [String],
+    relatedLinks: [
+        {
+            title: String,
+            url: String,
+            _id: false
+        },
+    ],
+    technicalSpecifications: String,
+    trl: { type: Number, default: 1 },
+    spotlight: { type: Boolean, default: false },
+    images: [
+        {
+            url: String,
+            caption: String,
+            _id: false
+        }
+    ],
+    patent: {
+        type: String,
+        enum: ["Not Filed", "Application Filed", "Under Examination", "Granted", "Abandoned/Lapsed"],
+        required: true
+    },
+    patentId: { type: String },
+    patentApplicationNumber: { type: String },
+    patentFilingDate: { type: Date },
+    patentGrantDate: { type: Date },
+    patentDocumentUrl: { type: String },
+    brochures: [
+        {
+            url: { type: String, required: true },
+            originalName: { type: String, required: true },
+            _id: false
+        }
+    ],
+    createdAt: { type: Date },
+    updatedAt: { type: Date },
+    deletedAt: { type: Date, default: Date.now, expires: '30d' } 
+}, {
+    timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' }
+});
+
+
+export const DeletedTech = model("DeletedTech", deletedTechSchema, "Deleted_techs");
