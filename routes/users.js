@@ -73,37 +73,54 @@ export const loadFirestoreUserProfile = asyncHandler(async (req, res, next) => {
   }
 });
 
+// REPLACE your old checkPermissions function with this new one.
+
 export const checkPermissions = (requiredAccess) => {
-    return (req, res, next) => {
-        if (!req.user) {
-            return res.status(401).json({
-                message: "Admin user profile not loaded. Permission check failed.",
-                success: false,
-                code: "ADMIN_PROFILE_REQUIRED_FOR_PERMISSIONS",
-            });
-        }
-        const { role } = req.user;
-        let hasPermission = false;
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        message: "User profile not loaded. Permission check failed.",
+        success: false,
+        code: "ADMIN_PROFILE_REQUIRED_FOR_PERMISSIONS",
+      });
+    }
 
-        // Super admin has all permissions
-        if (role === "superAdmin") {
-            hasPermission = true;
-        } else if (Array.isArray(requiredAccess)) {
-            hasPermission = requiredAccess.includes(role);
-        } else if (typeof requiredAccess === 'string') {
-            hasPermission = role === requiredAccess;
-        }
+    const { role, ...permissions } = req.user;
 
-        if (hasPermission) {
-            next();
-        } else {
-            const requiredDescription = Array.isArray(requiredAccess) ? `one of roles: ${requiredAccess.join(", ")}` : `role: ${requiredAccess}`;
-            return res.status(403).json({
-                message: `Access denied. Requesting admin requires ${requiredDescription}. Your role: ${role}.`,
-                success: false,
-            });
-        }
-    };
+    // 1. Super admin always has permission
+    if (role === "superAdmin") {
+      return next();
+    }
+
+    let hasPermission = false;
+    let requiredDescription = "";
+
+    // 2. Check for specific properties (like { addTech: true })
+    if (typeof requiredAccess === 'object' && !Array.isArray(requiredAccess) && requiredAccess !== null) {
+        requiredDescription = Object.keys(requiredAccess).map(key => `${key}: ${requiredAccess[key]}`).join(', ');
+        hasPermission = Object.keys(requiredAccess).every(key => {
+            // Check if the user has the key and its value matches
+            return permissions[key] === requiredAccess[key];
+        });
+
+    // 3. Check for specific roles (like ["admin", "superAdmin"])
+    } else if (Array.isArray(requiredAccess)) {
+        requiredDescription = `one of roles: ${requiredAccess.join(", ")}`;
+        hasPermission = requiredAccess.includes(role);
+    } else if (typeof requiredAccess === 'string') {
+        requiredDescription = `role: ${requiredAccess}`;
+        hasPermission = (role === requiredAccess);
+    }
+
+    if (hasPermission) {
+      return next();
+    } else {
+      return res.status(403).json({
+        message: `Access denied. Action requires permissions (${requiredDescription}). Your role is '${role}'.`,
+        success: false,
+      });
+    }
+  };
 };
 
 
