@@ -551,6 +551,8 @@ router.post(
   })
 );
 
+
+
 router.put(
   "/:id",
   verifyFirebaseToken,
@@ -763,9 +765,66 @@ router.delete(
   })
 );
 
+
+router.delete(
+  "/deleted/:id",
+  verifyFirebaseToken,
+  loadFirestoreUserProfile,
+  checkPermissions({ deleteTech: true }), // Or a more specific/restrictive permission
+  asyncHandler(async (req, res) => {
+    const techId = req.params.id;
+    const { role } = req.user;
+
+    if (role !== "superAdmin") {
+      return res.status(403).json({
+        message: "Forbidden: You do not have permission for this action.",
+      });
+    }
+
+    const techToDelete = await DeletedTech.findOne({ id: techId }).lean();
+
+    if (!techToDelete) {
+      return res
+        .status(404)
+        .json({ message: "Archived technology not found." });
+    }
+
+    // --- Start Deletion of Files ---
+    try {
+      if (techToDelete.images?.length) {
+        await deleteImageFiles(techToDelete.images);
+      }
+      if (techToDelete.brochures?.length) {
+        const brochureDeletionPromises = techToDelete.brochures.map((b) =>
+          deleteFileByServerPath(b.url)
+        );
+        await Promise.all(brochureDeletionPromises);
+      }
+    } catch (fileError) {
+      console.error(
+        `Error during file deletion for tech ${techId}:`,
+        fileError
+      );
+      return res.status(500).json({
+        message: "An error occurred while deleting associated files. The record was not deleted.",
+      });
+    }
+    // --- End Deletion of Files ---
+
+
+    // --- Delete the Database Record ---
+    await DeletedTech.deleteOne({ _id: techToDelete._id });
+
+    res.json({
+      message: `Technology ${techId} and all associated files have been permanently deleted.`,
+    });
+  })
+);
+
+
 const cleanupExpiredTechFiles = async () => {
   console.log(
-    `[${new Date().toISOString()}] Running scheduled job: Cleaning up expired technology files...`
+    `[${new Date().toISOString()}] Running scheduled job: Cleaning up expired technologies...`
   );
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - 30);
@@ -776,33 +835,46 @@ const cleanupExpiredTechFiles = async () => {
     }).lean();
 
     if (expiredTechs.length === 0) {
-      console.log("No expired technology files to clean up.");
+      console.log("No expired technologies to permanently delete.");
       return;
     }
 
     console.log(
-      `Found ${expiredTechs.length} expired technologies to process for file cleanup.`
+      `Found ${expiredTechs.length} expired technologies to permanently delete.`
     );
-    const allDeletionPromises = [];
+    const allFileDeletionPromises = [];
+    const expiredTechIds = [];
 
     for (const tech of expiredTechs) {
+      expiredTechIds.push(tech._id);
       console.log(`- Preparing to delete files for expired tech: ${tech.id}`);
       if (tech.images?.length) {
-        allDeletionPromises.push(deleteImageFiles(tech.images));
+        allFileDeletionPromises.push(deleteImageFiles(tech.images));
       }
       if (tech.brochures?.length) {
         for (const brochure of tech.brochures) {
           if (brochure.url) {
-            allDeletionPromises.push(deleteFileByServerPath(brochure.url));
+            allFileDeletionPromises.push(deleteFileByServerPath(brochure.url));
           }
         }
       }
     }
 
-    await Promise.all(allDeletionPromises);
-    console.log("File cleanup job finished successfully.");
+    // 1. Await all file deletions
+    await Promise.all(allFileDeletionPromises);
+    console.log("Associated files for expired technologies deleted successfully.");
+
+    // 2. Delete the database records
+    if (expiredTechIds.length > 0) {
+      await DeletedTech.deleteMany({ _id: { $in: expiredTechIds } });
+      console.log(
+        `${expiredTechIds.length} expired technology records permanently deleted from the database.`
+      );
+    }
+
+    console.log("Permanent deletion job finished successfully.");
   } catch (error) {
-    console.error("Error during scheduled file cleanup:", error);
+    console.error("Error during scheduled permanent deletion:", error);
   }
 };
 
