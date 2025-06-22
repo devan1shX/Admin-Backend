@@ -4,10 +4,6 @@ import { asyncHandler } from "../utils.js";
 
 const router = express.Router();
 
-// =================================================================
-// MIDDLEWARE (No changes made here)
-// =================================================================
-
 export const verifyFirebaseToken = asyncHandler(async (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const idToken =
@@ -73,8 +69,6 @@ export const loadFirestoreUserProfile = asyncHandler(async (req, res, next) => {
   }
 });
 
-// REPLACE your old checkPermissions function with this new one.
-
 export const checkPermissions = (requiredAccess) => {
   return (req, res, next) => {
     if (!req.user) {
@@ -87,7 +81,6 @@ export const checkPermissions = (requiredAccess) => {
 
     const { role, ...permissions } = req.user;
 
-    // 1. Super admin always has permission
     if (role === "superAdmin") {
       return next();
     }
@@ -95,21 +88,23 @@ export const checkPermissions = (requiredAccess) => {
     let hasPermission = false;
     let requiredDescription = "";
 
-    // 2. Check for specific properties (like { addTech: true })
-    if (typeof requiredAccess === 'object' && !Array.isArray(requiredAccess) && requiredAccess !== null) {
-        requiredDescription = Object.keys(requiredAccess).map(key => `${key}: ${requiredAccess[key]}`).join(', ');
-        hasPermission = Object.keys(requiredAccess).every(key => {
-            // Check if the user has the key and its value matches
-            return permissions[key] === requiredAccess[key];
-        });
-
-    // 3. Check for specific roles (like ["admin", "superAdmin"])
+    if (
+      typeof requiredAccess === "object" &&
+      !Array.isArray(requiredAccess) &&
+      requiredAccess !== null
+    ) {
+      requiredDescription = Object.keys(requiredAccess)
+        .map((key) => `${key}: ${requiredAccess[key]}`)
+        .join(", ");
+      hasPermission = Object.keys(requiredAccess).every((key) => {
+        return permissions[key] === requiredAccess[key];
+      });
     } else if (Array.isArray(requiredAccess)) {
-        requiredDescription = `one of roles: ${requiredAccess.join(", ")}`;
-        hasPermission = requiredAccess.includes(role);
-    } else if (typeof requiredAccess === 'string') {
-        requiredDescription = `role: ${requiredAccess}`;
-        hasPermission = (role === requiredAccess);
+      requiredDescription = `one of roles: ${requiredAccess.join(", ")}`;
+      hasPermission = requiredAccess.includes(role);
+    } else if (typeof requiredAccess === "string") {
+      requiredDescription = `role: ${requiredAccess}`;
+      hasPermission = role === requiredAccess;
     }
 
     if (hasPermission) {
@@ -122,11 +117,6 @@ export const checkPermissions = (requiredAccess) => {
     }
   };
 };
-
-
-// =================================================================
-// EXISTING ROUTES (No changes made here)
-// =================================================================
 
 router.post(
   "/auth/create-profile",
@@ -163,9 +153,9 @@ router.post(
       editTech: true,
       deleteTech: false,
       addTech: true,
-      editEvent: true,
+      editEvent: false,
       deleteEvent: false,
-      addEvent: true,
+      addEvent: false,
       authProvider: signInProvider,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -190,88 +180,106 @@ router.get(
   })
 );
 
-
-// =================================================================
-// NEW ADMIN PANEL ROUTES (Added to fix the errors)
-// =================================================================
-
-// 1. GET ALL USERS (Fixes the initial 404 error on page load)
 router.get(
-    "/admin/all-users",
-    verifyFirebaseToken,
-    loadFirestoreUserProfile,
-    checkPermissions(["admin", "superAdmin"]),
-    asyncHandler(async (req, res) => {
-        const usersSnapshot = await firestore.collection("users").get();
-        if (usersSnapshot.empty) {
-            return res.status(200).json({ success: true, users: [] });
-        }
-        const users = usersSnapshot.docs.map(doc => ({ ...doc.data(), uid: doc.id }));
-        res.status(200).json({ success: true, users });
-    })
+  "/admin/all-users",
+  verifyFirebaseToken,
+  loadFirestoreUserProfile,
+  checkPermissions(["admin", "superAdmin"]),
+  asyncHandler(async (req, res) => {
+    const usersSnapshot = await firestore.collection("users").get();
+    if (usersSnapshot.empty) {
+      return res.status(200).json({ success: true, users: [] });
+    }
+    const users = usersSnapshot.docs.map((doc) => ({
+      ...doc.data(),
+      uid: doc.id,
+    }));
+    res.status(200).json({ success: true, users });
+  })
 );
 
-// 2. UPDATE USER PERMISSIONS (Handles the "Save Changes" functionality)
 router.put(
-    "/users/:uid/permissions",
-    verifyFirebaseToken,
-    loadFirestoreUserProfile,
-    checkPermissions(["admin", "superAdmin"]),
-    asyncHandler(async (req, res) => {
-        const { uid } = req.params;
-        const { role, addTech, editTech, deleteTech, addEvent, editEvent, deleteEvent } = req.body;
+  "/users/:uid/permissions",
+  verifyFirebaseToken,
+  loadFirestoreUserProfile,
+  checkPermissions(["admin", "superAdmin"]),
+  asyncHandler(async (req, res) => {
+    const { uid } = req.params;
+    const {
+      role,
+      addTech,
+      editTech,
+      deleteTech,
+      addEvent,
+      editEvent,
+      deleteEvent,
+    } = req.body;
 
-        // Prevent a user from being updated to "superAdmin" via the API
-        if (role === 'superAdmin') {
-            return res.status(403).json({ success: false, message: "Cannot assign superAdmin role." });
-        }
-        
-        const userRef = firestore.collection("users").doc(uid);
-        await userRef.update({
-            role,
-            addTech,
-            editTech,
-            deleteTech,
-            addEvent,
-            editEvent,
-            deleteEvent,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        
-        res.status(200).json({ success: true, message: "User permissions updated successfully." });
-    })
+    if (role === "superAdmin") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Cannot assign superAdmin role." });
+    }
+
+    const userRef = firestore.collection("users").doc(uid);
+    await userRef.update({
+      role,
+      addTech,
+      editTech,
+      deleteTech,
+      addEvent,
+      editEvent,
+      deleteEvent,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: "User permissions updated successfully.",
+      });
+  })
 );
 
-// 3. DELETE A USER (Handles the "Delete User" functionality)
 router.delete(
-    "/admin/users/:uid",
-    verifyFirebaseToken,
-    loadFirestoreUserProfile,
-    checkPermissions(["admin", "superAdmin"]),
-    asyncHandler(async (req, res) => {
-        const { uid } = req.params;
-        const requestingUser = req.user;
+  "/admin/users/:uid",
+  verifyFirebaseToken,
+  loadFirestoreUserProfile,
+  checkPermissions(["admin", "superAdmin"]),
+  asyncHandler(async (req, res) => {
+    const { uid } = req.params;
+    const requestingUser = req.user;
 
-        if (uid === requestingUser.uid) {
-            return res.status(400).json({ success: false, message: "Cannot delete your own account." });
-        }
+    if (uid === requestingUser.uid) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Cannot delete your own account." });
+    }
 
-        const userToDeleteDoc = await firestore.collection("users").doc(uid).get();
-        if (!userToDeleteDoc.exists) {
-            return res.status(404).json({ success: false, message: "User not found." });
-        }
+    const userToDeleteDoc = await firestore.collection("users").doc(uid).get();
+    if (!userToDeleteDoc.exists) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found." });
+    }
 
-        if (userToDeleteDoc.data().role === "superAdmin") {
-            return res.status(403).json({ success: false, message: "Cannot delete a superAdmin account." });
-        }
-        
-        // Delete from Firestore and Firebase Auth
-        await firestore.collection("users").doc(uid).delete();
-        await admin.auth().deleteUser(uid);
-        
-        res.status(200).json({ success: true, message: "User deleted successfully." });
-    })
+    if (userToDeleteDoc.data().role === "superAdmin") {
+      return res
+        .status(403)
+        .json({
+          success: false,
+          message: "Cannot delete a superAdmin account.",
+        });
+    }
+
+    await firestore.collection("users").doc(uid).delete();
+    await admin.auth().deleteUser(uid);
+
+    res
+      .status(200)
+      .json({ success: true, message: "User deleted successfully." });
+  })
 );
-
 
 export default router;
